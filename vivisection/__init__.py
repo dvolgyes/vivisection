@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-from loguru import logger
+
+__version__ = '0.1'
+__description__ = 'Debug tools for Pytorch models'
+__summary__ = 'Debug tools for Pytorch models'
+__license__ = 'BSD'
+__author__ = 'David Völgyes'
+__email__ = 'david.volgyes@ieee.org'
+
+# system modules
 import sys
 import os
 import importlib
 from contextlib import contextmanager
 from pathlib import Path
+import traceback
+
+# 3rd party modules
+from loguru import logger
 from pygments import highlight
 from pygments.lexers import PythonLexer
 from pygments.formatters.terminal import TerminalFormatter as fmt
 from torch.utils.data.sampler import Sampler
 from termcolor import colored
-import traceback
-
-
-def eprint(*args, **kwargs):
-    print(*args, **kwargs, file=sys.stderr)
 
 
 @contextmanager
@@ -33,7 +40,6 @@ def local_env(name, value):
 
 
 conda = os.environ.get('CONDA_DEFAULT_ENV', 'Not in use')
-
 torch_enabled = 'torch' in sys.modules
 
 
@@ -74,40 +80,50 @@ if tf_exists:
 
 logger.info('System information')
 logger.info(
-    f'  Python    :    {sys.version[0:5]},'
+    f'  Python     :    {sys.version[0:5]},'
     f'   Conda:{conda}, CUDA: {CUDA_version}')
+logger.info(f'  Vivisection:    {__version__}      (imported: True)')
+
 if torch_enabled:
     logger.info(
-        f'  PyTorch   :    {torch_version:8s} (imported: {torch_enabled})')
+        f'  PyTorch    :    {torch_version:8s} (imported: {torch_enabled})')
 if tf_enabled:
     logger.info(
-        f'  Tensorflow: {tf_version:8s} '
+        f'  Tensorflow : {tf_version:8s} '
         f'(imported: {tf_enabled}, CUDA capable:{TF_CUDA})')
 if keras_enabled:
     logger.info(
-        f'  Keras     :      {keras_version:8s}'
+        f'  Keras      :      {keras_version:8s}'
         f' (imported: {keras_enabled})')
 if fastai_enabled:
     logger.info(
-        f'  FastAI    :     {fastai_version:8s}'
+        f'  FastAI     :     {fastai_version:8s}'
         f' (imported: {fastai_enabled})')
 
-try:
+if Path('requirements.txt').exists():
     with open('requirements.txt') as f:
         for line in map(str.strip, f.readlines()):
             if line in sys.modules:
                 try:
-                    version = sys.modules[line].__version__
-                    logger.info(f'  {line:10s}:    '
+                    module = sys.modules[line]
+                    if hasattr(module, '__version__'):
+                        version = module.__version__
+                    else:
+                        version = module.VERSION
+                    if isinstance(version, tuple):
+                        version = ".".join(map(str, version))
+                    logger.info(f'  {line:11s}:    '
                                 f'{version:8s} (imported: True)')
-                except Exception as e:
-                    eprint(e)
-except:
+                except AttributeError:
+                    version = 'unknown'
+                    logger.info(f'  {line:11s}:    '
+                                f'{version:8s} (imported: True)')
+else:
     logger.warning(f'Missing requirements.txt!')
 
 interactive = False
 abort_on_error = True
-
+line_length = 80
 
 test_function = {}
 test_function_names = {}
@@ -131,14 +147,40 @@ test_function_names['backward_attr'] = ['NaN', ]
 
 test_function_names['loss'] = ['NaN', 'inf']
 
-line_length = 80
+__forward_hook_flag = True
+__forward_pre_hook_flag = True
+__backward_hook_flag = True
+
+
+def forward_hooks(new_status=None):
+    global __forward_hook_flag
+    if new_status is None:
+        new_status = not __forward_hook_flag
+    __forward_hook_flag = new_status
+    logger.info(f'Forward hooks: {new_status}')
+
+
+def backward_hooks(new_status=None):
+    global __backward_hook_flag
+    if new_status is None:
+        new_status = not __backward_hook_flag
+    __backward_hook_flag = new_status
+    logger.info(f'Forward hooks: {new_status}')
+
+
+def forward_pre_hooks(new_status=None):
+    global __forward_pre_hook_flag
+    if new_status is None:
+        new_status = not __forward_pre_hook_flag
+    __forward_pre_hook_flag = new_status
+    logger.info(f'forward_pre hooks: {new_status}')
 
 
 def free_space(dirname='.'):
     try:
         f = os.statvfs(dirname)
         return (f.f_bavail*f.f_bsize/(1024**3))
-    except:
+    except Exception:
         return -1
 
 
@@ -193,7 +235,7 @@ class SampleLogger(Sampler):
         return self.sampler.__len__()
 
 
-def get_location(module):
+def __get_location(module):
     result = []
     result.append(colored('Location in the model:', 'yellow'))
     result.append(module.print())
@@ -203,7 +245,7 @@ def get_location(module):
     return "\n".join(result)
 
 
-def batch_indices(array, test_function):
+def __batch_indices(array, test_function):
     indices = []
     for i in range(array.size()[0]):
         if torch.any(test_function(array[i])):
@@ -213,8 +255,9 @@ def batch_indices(array, test_function):
     return list(map(str, indices))
 
 
-def forward_hook(module, input, output):
-
+def __forward_hook(module, input, output):
+    if not __forward_hook_flag:
+        return
     if type(input) != tuple:
         input = (input,)
 
@@ -228,9 +271,9 @@ def forward_hook(module, input, output):
                 text = [f'  Forward hook: {varname}'
                         ' failed for the input!']
                 text.append(colored('Affected sample indices: ', 'yellow')
-                            + (", ").join(batch_indices(i, f)))
+                            + (", ").join(__batch_indices(i, f)))
                 text.append("")
-                text.append(get_location(module))
+                text.append(__get_location(module))
                 logger.error("\n".join(text)+"\n")
 
                 if abort_on_error:
@@ -245,7 +288,7 @@ def forward_hook(module, input, output):
                         f'  Forward hook: {varname}'
                         f' failed for the "{attr}"'
                         ' attribute of the input!']
-                    text.append(get_location(module))
+                    text.append(__get_location(module))
                     logger.error("\n".join(text)+"\n")
                     if abort_on_error:
                         sys.exit(1)
@@ -261,7 +304,9 @@ def forward_hook(module, input, output):
                     sys.exit(1)
 
 
-def backward_hook(module, input, output):
+def __backward_hook(module, input, output):
+    if not __backward_hook_flag:
+        return
     if type(input) != tuple:
         input = (input,)
 
@@ -297,17 +342,19 @@ def backward_hook(module, input, output):
                     varname = test_function_names["backward_attr"][idx]
                     text = [f'  Backward hook: {varname}'
                             ' failed for the output!']
-                    text.append(get_location(module))
+                    text.append(__get_location(module))
                     logger.error("\n".join(text)+"\n")
                     if abort_on_error:
                         sys.exit(1)
 
 
-def forward_pre_hook(module, input):
+def __forward_pre_hook(module, input):
+    if not __forward_pre_hook_flag:
+        return
     return
 
 
-def ghook(*args, **kwargs):
+def __ghook(*args, **kwargs):
     for i, a in enumerate(args):
         if isinstance(a, torch.Tensor):
             for idx, f in enumerate(test_function['loss']):
@@ -334,16 +381,16 @@ def debug_model(model):
 
         def __call__(self, *args):
             tensor = self.model(*args)
-            tensor.register_hook(ghook)
+            tensor.register_hook(__ghook)
             return tensor
 
     global saved_model
     saved_model = model
 
-    def r2(self):
-        return r(saved_model, self)
+    def __r2(self):
+        return __r(saved_model, self)
 
-    def r(self, obj=None):
+    def __r(self, obj=None):
         def _addindent(s_, numSpaces):
             s = s_.split('\n')
             # don't do anything for single-line stuff
@@ -363,7 +410,7 @@ def debug_model(model):
             extra_lines = extra_repr.split('\n')
         child_lines = []
         for key, module in self._modules.items():
-            mod_str = r(module, obj)
+            mod_str = __r(module, obj)
             lines = '(' + key + '): ' + mod_str
             if obj is not None and module.__hash__() == obj.__hash__():
                 lines = colored(lines, 'red')
@@ -383,9 +430,9 @@ def debug_model(model):
         return main_str
 
     def set_model_hooks(module):
-        module.register_forward_hook(forward_hook)
-        module.register_forward_pre_hook(forward_pre_hook)
-        module.register_backward_hook(backward_hook)
-        module.print = r2.__get__(module, module.__class__)
+        module.register_forward_hook(__forward_hook)
+        module.register_forward_pre_hook(__forward_pre_hook)
+        module.register_backward_hook(__backward_hook)
+        module.print = __r2.__get__(module, module.__class__)
     model.apply(set_model_hooks)
     return debug_instance(model)

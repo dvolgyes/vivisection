@@ -1,0 +1,48 @@
+Vivisection
+===========
+
+A module for debugging machine learning models.
+At this moment it supports PyTorch, mostly, and some general tools.
+
+
+Installation
+------------
+
+You can install the code with *pip* using this shortcut:
+```make install```
+
+or manually with the setup.py file.
+
+Removing the package:
+```make uninstall```
+
+
+Usage
+-----
+
+```
+import necessary_modules
+
+import vivisection
+from vivisection import SampleLogger, debug_model
+...
+
+dataloader = DataLoader(...., SampleLogger(Sampler(...))
+...
+
+model = create_model()
+
+model = debug_model(model)
+
+for i in range(epochs):
+    ...
+
+```
+
+Main options:
+
+ - you can enable/disable the forward/backward/forward_pre hooks
+ - you can set manually design test functions (default: isnan/isfinite)
+ - log can be redirected to file (not yet implemented)
+ - sample index inside dataset is look up, if applicable
+ - abort on error (default), or fix (nan->0, +/-inf -> fixed number)
