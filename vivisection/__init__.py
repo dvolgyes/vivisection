@@ -8,6 +8,7 @@ __author__ = 'David Völgyes'
 __email__ = 'david.volgyes@ieee.org'
 
 # system modules
+import torch
 import sys
 import os
 import importlib
@@ -22,6 +23,47 @@ from pygments.lexers import PythonLexer
 from pygments.formatters.terminal import TerminalFormatter as fmt
 from torch.utils.data.sampler import Sampler
 from termcolor import colored
+
+torch_enabled = 'torch' in sys.modules
+
+
+class __vivisection_settings:
+
+    def __init__(self):
+        self.interactive = False
+        self.abort_on_error = True
+        self.line_length = 80
+
+        self.tf = {}
+        self.tf_names = {}
+        self.tf['forward_in'] = [torch.isnan, torch.isinf]
+        self.tf['forward_out'] = [torch.isnan, torch.isinf]
+        self.tf['forward_pre'] = [torch.isnan, torch.isinf]
+        self.tf['backward_in'] = [torch.isnan, torch.isinf]
+        self.tf['backward_out'] = [torch.isnan, torch.isinf]
+        self.tf['forward_attr'] = [torch.isnan, torch.isinf]
+        self.tf['backward_attr'] = [torch.isnan, torch.isinf]
+        self.tf['loss'] = [torch.isnan, torch.isinf]
+
+        self.tf_names['forward_in'] = ['NaN', 'inf']
+        self.tf_names['forward_out'] = ['NaN', 'inf']
+        self.tf_names['forward_attr'] = ['NaN', 'inf']
+        self.tf_names['forward_pre'] = ['NaN', 'inf']
+        self.tf_names['backward_in'] = ['NaN', 'inf']
+        self.tf_names['backward_out'] = ['NaN', 'inf']
+        self.tf_names['backward_attr'] = ['NaN', 'inf']
+        self.tf_names['loss'] = ['NaN', 'inf']
+
+        self.forward_hook_flag = True
+        self.forward_pre_hook_flag = True
+        self.backward_hook_flag = True
+        self.sample_logger = None
+
+    def set_logger(self, logger):
+        self.sample_logger = logger
+
+
+_settings = __vivisection_settings()
 
 
 @contextmanager
@@ -40,7 +82,6 @@ def local_env(name, value):
 
 
 conda = os.environ.get('CONDA_DEFAULT_ENV', 'Not in use')
-torch_enabled = 'torch' in sys.modules
 
 
 def detect_libs(name):
@@ -71,7 +112,6 @@ TF_CUDA = False
 CUDA_version = None
 
 if torch_exists:
-    import torch
     CUDA_version = torch.version.cuda
 if tf_exists:
     with local_env('TF_CPP_MIN_LOG_LEVEL', 2):
@@ -121,58 +161,28 @@ if Path('requirements.txt').exists():
 else:
     logger.warning(f'Missing requirements.txt!')
 
-interactive = False
-abort_on_error = True
-line_length = 80
-
-test_function = {}
-test_function_names = {}
-test_function['forward_in'] = [torch.isnan, ]
-test_function['forward_out'] = [torch.isnan, ]
-test_function['forward_pre'] = [torch.isnan, ]
-test_function['backward_in'] = [torch.isnan, ]
-test_function['backward_out'] = [torch.isnan, ]
-test_function['forward_attr'] = [torch.isnan, ]
-test_function['backward_attr'] = [torch.isnan, ]
-test_function['loss'] = [torch.isnan, torch.isinf]
-
-test_function_names['forward_in'] = ['NaN', ]
-test_function_names['forward_out'] = ['NaN', ]
-test_function_names['forward_attr'] = ['NaN', ]
-
-test_function_names['forward_pre'] = ['NaN', ]
-test_function_names['backward_in'] = ['NaN', ]
-test_function_names['backward_out'] = ['NaN', ]
-test_function_names['backward_attr'] = ['NaN', ]
-
-test_function_names['loss'] = ['NaN', 'inf']
-
-__forward_hook_flag = True
-__forward_pre_hook_flag = True
-__backward_hook_flag = True
-
 
 def forward_hooks(new_status=None):
-    global __forward_hook_flag
+    global _settings
     if new_status is None:
-        new_status = not __forward_hook_flag
-    __forward_hook_flag = new_status
+        new_status = not _settings.forward_hook_flag
+    _settings.forward_hook_flag = new_status
     logger.info(f'Forward hooks: {new_status}')
 
 
 def backward_hooks(new_status=None):
-    global __backward_hook_flag
+    global _settings
     if new_status is None:
-        new_status = not __backward_hook_flag
-    __backward_hook_flag = new_status
+        new_status = not _settings.backward_hook_flag
+    _settings.backward_hook_flag = new_status
     logger.info(f'Forward hooks: {new_status}')
 
 
 def forward_pre_hooks(new_status=None):
-    global __forward_pre_hook_flag
+    global _settings
     if new_status is None:
-        new_status = not __forward_pre_hook_flag
-    __forward_pre_hook_flag = new_status
+        new_status = not _settings.forward_pre_hook_flag
+    _settings.forward_pre_hook_flag = new_status
     logger.info(f'forward_pre hooks: {new_status}')
 
 
@@ -191,32 +201,44 @@ def find_global_variable_name(var):
     return None
 
 
+def path_difference(file1, file2):
+    diff = str(Path(os.path.relpath(file1, file2)))
+    cnt = 0
+    for i, c in enumerate(diff):
+        if c not in ['.', '/']:
+            break
+        if c == '/':
+            cnt += 1
+    return cnt
+
+
 def format_trace(trace, skip=0, levels=None):
+    global _settings
     lines = []
+    f0 = Path(trace[0].filename)
     for idx, t in enumerate(trace):
         if idx < skip:
             continue
         if levels is not None and idx + levels >= len(trace):
             break
         e = Path(t.filename).name+":"+str(t.lineno)
+        if path_difference(f0, Path(t.filename)) <= 3:
+            e = colored(e, 'green')
         b = "  "*idx+t.line
-        n = max(line_length - len(b), 0)
+        n = max(_settings.line_length - len(b), 0)
         b = "  "*idx+(highlight(t.line, PythonLexer(), fmt())).strip()
         e = e.strip()
         lines.append(b+(" "*n)+e)
     return "\n".join(lines)
 
 
-sample_logger = None
-
-
 class SampleLogger(Sampler):
 
     def __init__(self, sampler):
+        global _settings
         self.sampler = sampler
         self.index_history = []
-        global sample_logger
-        sample_logger = self
+        _settings.set_logger(self)
 
     def clear(self):
         self.index_history.clear()
@@ -235,7 +257,7 @@ class SampleLogger(Sampler):
         return self.sampler.__len__()
 
 
-def __get_location(module):
+def _get_location(module):
     result = []
     result.append(colored('Location in the model:', 'yellow'))
     result.append(module.print())
@@ -245,18 +267,21 @@ def __get_location(module):
     return "\n".join(result)
 
 
-def __batch_indices(array, test_function):
+def _batch_indices(array, test_function):
+    global _settings
     indices = []
     for i in range(array.size()[0]):
         if torch.any(test_function(array[i])):
             indices.append(i)
-    if sample_logger is not None:
-        indices = list(sample_logger.get_samples(array.size()[0], indices))
+    if _settings.sample_logger is not None:
+        indices = list(_settings.sample_logger.get_samples(
+            array.size()[0], indices))
     return list(map(str, indices))
 
 
-def __forward_hook(module, input, output):
-    if not __forward_hook_flag:
+def _forward_hook(module, input, output):
+    global _settings
+    if not _settings.forward_hook_flag:
         return
     if type(input) != tuple:
         input = (input,)
@@ -265,47 +290,47 @@ def __forward_hook(module, input, output):
         output = (output,)
 
     for i in input:
-        for idx, f in enumerate(test_function['forward_in']):
+        for idx, f in enumerate(_settings.tf['forward_in']):
             if torch.any(f(i)):
-                varname = test_function_names["forward_in"][idx]
+                varname = _settings.tf_names["forward_in"][idx]
                 text = [f'  Forward hook: {varname}'
                         ' failed for the input!']
                 text.append(colored('Affected sample indices: ', 'yellow')
-                            + (", ").join(__batch_indices(i, f)))
+                            + (", ").join(_batch_indices(i, f)))
                 text.append("")
-                text.append(__get_location(module))
+                text.append(_get_location(module))
                 logger.error("\n".join(text)+"\n")
 
-                if abort_on_error:
+                if _settings.abort_on_error:
                     sys.exit(1)
 
     for attr in dir(module):
         if type(getattr(module, attr)) == torch.nn.parameter.Parameter:
-            for idx, f in enumerate(test_function['forward_attr']):
+            for idx, f in enumerate(_settings.tf['forward_attr']):
                 if torch.any(f(getattr(module, attr))):
-                    varname = test_function_names["forward_attr"][idx]
+                    varname = _settings.tf_names["forward_attr"][idx]
                     text = [
                         f'  Forward hook: {varname}'
                         f' failed for the "{attr}"'
                         ' attribute of the input!']
-                    text.append(__get_location(module))
+                    text.append(_get_location(module))
                     logger.error("\n".join(text)+"\n")
-                    if abort_on_error:
+                    if _settings.abort_on_error:
                         sys.exit(1)
 
     for o in output:
-        for idx, f in enumerate(test_function['forward_out']):
+        for idx, f in enumerate(_settings.tf['forward_out']):
             if torch.any(f(o)):
-                varname = test_function_names["forward_out"][idx]
+                varname = _settings.tf_names["forward_out"][idx]
                 text = [f'  Forward hook: {varname}'
                         ' failed for the output!']
                 logger.error("\n".join(text)+"\n")
-                if abort_on_error:
+                if _settings.abort_on_error:
                     sys.exit(1)
 
 
-def __backward_hook(module, input, output):
-    if not __backward_hook_flag:
+def _backward_hook(module, input, output):
+    if not _settings.backward_hook_flag:
         return
     if type(input) != tuple:
         input = (input,)
@@ -315,51 +340,51 @@ def __backward_hook(module, input, output):
 
     for i in input:
         if i is not None:
-            for idx, f in enumerate(test_function['backward_in']):
+            for idx, f in enumerate(_settings.tf['backward_in']):
                 if torch.any(f(i)):
-                    varname = test_function_names["backward_in"][idx]
+                    varname = _settings.tf_names["backward_in"][idx]
                     text = [f'  Backward hook: {varname}'
                             ' failed for the input!']
                     logger.error("\n".join(text)+"\n")
-                    if abort_on_error:
+                    if _settings.abort_on_error:
                         sys.exit(1)
 
     for attr in dir(module):
         if type(getattr(module, attr)) == torch.nn.parameter.Parameter:
-            for idx, f in enumerate(test_function['backward_attr']):
+            for idx, f in enumerate(_settings.tf['backward_attr']):
                 if torch.any(f(getattr(module, attr))):
-                    varname = test_function_names["backward_attr"][idx]
+                    varname = _settings.tf_names["backward_attr"][idx]
                     text = [f'  Backward hook: {varname} '
                             'failed for the "{attr}" attribute of the input!']
                     logger.error("\n".join(text)+"\n")
-                    if abort_on_error:
+                    if _settings.abort_on_error:
                         sys.exit(1)
 
     for i in output:
         if i is not None:
-            for idx, f in enumerate(test_function['backward_attr']):
+            for idx, f in enumerate(_settings.tf['backward_attr']):
                 if torch.any(f(i)):
-                    varname = test_function_names["backward_attr"][idx]
+                    varname = _settings.tf_names["backward_attr"][idx]
                     text = [f'  Backward hook: {varname}'
                             ' failed for the output!']
-                    text.append(__get_location(module))
+                    text.append(_get_location(module))
                     logger.error("\n".join(text)+"\n")
-                    if abort_on_error:
+                    if _settings.abort_on_error:
                         sys.exit(1)
 
 
-def __forward_pre_hook(module, input):
-    if not __forward_pre_hook_flag:
+def _forward_pre_hook(module, input):
+    if not _settings.forward_pre_hook_flag:
         return
     return
 
 
-def __ghook(*args, **kwargs):
+def _ghook(*args, **kwargs):
     for i, a in enumerate(args):
         if isinstance(a, torch.Tensor):
-            for idx, f in enumerate(test_function['loss']):
+            for idx, f in enumerate(_settings.tf['loss']):
                 if torch.any(f(a)):
-                    varname = test_function_names["loss"][idx]
+                    varname = _settings.tf_names["loss"][idx]
                     text = [f'Error in the loss function: {varname}']
                     if a.grad_fn is not None:
                         varname = str(type(a.grad_fn).__name__)
@@ -370,7 +395,7 @@ def __ghook(*args, **kwargs):
                             f'Enable "create_graph" for '
                             'more detailed error message.')
                     logger.error("\n".join(text)+"\n")
-                    if abort_on_error:
+                    if _settings.abort_on_error:
                         sys.exit(1)
 
 
@@ -381,16 +406,16 @@ def debug_model(model):
 
         def __call__(self, *args):
             tensor = self.model(*args)
-            tensor.register_hook(__ghook)
+            tensor.register_hook(_ghook)
             return tensor
 
     global saved_model
     saved_model = model
 
-    def __r2(self):
-        return __r(saved_model, self)
+    def _r2(self):
+        return _r(saved_model, self)
 
-    def __r(self, obj=None):
+    def _r(self, obj=None):
         def _addindent(s_, numSpaces):
             s = s_.split('\n')
             # don't do anything for single-line stuff
@@ -410,9 +435,9 @@ def debug_model(model):
             extra_lines = extra_repr.split('\n')
         child_lines = []
         for key, module in self._modules.items():
-            mod_str = __r(module, obj)
+            mod_str = _r(module, obj)
             lines = '(' + key + '): ' + mod_str
-            if obj is not None and module.__hash__() == obj.__hash__():
+            if obj is not None and module is obj:
                 lines = colored(lines, 'red')
             child_lines.append(lines)
         lines = extra_lines + child_lines
@@ -425,14 +450,14 @@ def debug_model(model):
             else:
                 main_str += '\n  ' + '\n  '.join(lines) + '\n'
         main_str += ')'
-        if obj is not None and self.__hash__() == obj.__hash__():
+        if obj is not None and self is obj:
             main_str = colored(main_str, 'red')
         return main_str
 
     def set_model_hooks(module):
-        module.register_forward_hook(__forward_hook)
-        module.register_forward_pre_hook(__forward_pre_hook)
-        module.register_backward_hook(__backward_hook)
-        module.print = __r2.__get__(module, module.__class__)
+        module.register_forward_hook(_forward_hook)
+        module.register_forward_pre_hook(_forward_pre_hook)
+        module.register_backward_hook(_backward_hook)
+        module.print = _r2.__get__(module, module.__class__)
     model.apply(set_model_hooks)
     return debug_instance(model)
